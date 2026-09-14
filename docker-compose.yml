@@ -1,0 +1,66 @@
+# 电商客服机器人 - Docker Compose（生产级）
+version: "3.8"
+
+services:
+  # ===== Redis：会话存储（生产必须）=====
+  redis:
+    image: redis:7-alpine
+    container_name: ecom-redis
+    restart: unless-stopped
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+
+  # ===== 主服务 =====
+  ecom-bot:
+    build: .
+    container_name: ecom-customer-bot
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      - APP_ENV=prod
+      - HOST=0.0.0.0
+      - PORT=8000
+      - LOG_LEVEL=info
+      # API Keys
+      - LLM_API_KEY=${LLM_API_KEY}
+      - EMBED_API_KEY=${EMBED_API_KEY}
+      # 模型配置
+      - LLM_MODEL=${LLM_MODEL:-deepseek-chat}
+      - LLM_TEMPERATURE=${LLM_TEMPERATURE:-0.3}
+      - TOP_K=${TOP_K:-3}
+      # 生产级配置
+      - REDIS_URL=redis://redis:6379/0
+      - LLM_TIMEOUT=30
+      - EMBED_TIMEOUT=15
+      - RERANK_TIMEOUT=10
+      - RATE_LIMIT_PER_MINUTE=60
+      - MAX_MESSAGE_LENGTH=2000
+    volumes:
+      # 持久化数据
+      - chroma_data:/app/chroma_db
+      - ./logs:/app/logs
+      - ./embed_cache.json:/app/embed_cache.json
+      # 知识库文档（可热更新，更新后重启容器重建索引）
+      - ./docs:/app/docs:ro
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+volumes:
+  chroma_data:
+  redis_data:

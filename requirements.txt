@@ -1,0 +1,45 @@
+# LangChain 核心
+langchain>=0.3.0
+langchain-core>=0.3.0
+langchain-community>=0.3.0
+
+# LangGraph（Agent 编排）
+langgraph>=0.2.0
+langgraph-checkpoint-sqlite>=0.2.0
+
+# LangSmith（追踪/监控，可选）
+langsmith>=0.1.0
+
+# 模型提供商
+langchain-openai>=0.2.0
+
+# 向量库
+chromadb>=0.4.0
+
+# Web 框架
+fastapi>=0.110.0
+uvicorn>=0.29.0
+
+# HTTP 客户端
+httpx>=0.27.0
+
+# 混合检索
+rank_bm25>=0.2.2
+jieba>=0.42.1
+
+# 重试
+tenacity>=8.2.0
+
+# 异步 SQLite
+aiosqlite>=0.19.0
+
+# 限流
+slowapi>=0.1.9
+
+# Redis（生产环境会话存储，可选）
+redis>=5.0.0
+langgraph-checkpoint-redis>=0.2.0
+
+# 文档解析
+python-docx>=1.1.0
+pypdf>=4.0.0

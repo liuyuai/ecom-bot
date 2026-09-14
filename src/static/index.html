@@ -1,0 +1,730 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>电商客服机器人</title>
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", "Microsoft YaHei", sans-serif;
+            background: #f0f2f5;
+            height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+        }
+        .chat-container {
+            width: 100%;
+            max-width: 720px;
+            height: 92vh;
+            background: #fff;
+            border-radius: 16px;
+            box-shadow: 0 4px 24px rgba(0,0,0,0.08);
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+        .chat-header {
+            padding: 16px 24px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: #fff;
+            font-size: 17px;
+            font-weight: 600;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        .chat-header .status-dot {
+            width: 8px; height: 8px;
+            background: #4ade80;
+            border-radius: 50%;
+            animation: pulse 2s infinite;
+        }
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.4; }
+        }
+        .chat-messages {
+            flex: 1;
+            overflow-y: auto;
+            padding: 20px 24px;
+            display: flex;
+            flex-direction: column;
+            gap: 14px;
+            scroll-behavior: smooth;
+        }
+        .chat-messages::-webkit-scrollbar { width: 6px; }
+        .chat-messages::-webkit-scrollbar-thumb { background: #ddd; border-radius: 3px; }
+
+        /* 消息气泡 */
+        .message {
+            max-width: 82%;
+            padding: 12px 16px;
+            border-radius: 14px;
+            line-height: 1.7;
+            font-size: 14px;
+            word-break: break-word;
+            animation: fadeIn 0.3s ease;
+        }
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(8px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        .message.user {
+            align-self: flex-end;
+            background: linear-gradient(135deg, #667eea, #764ba2);
+            color: #fff;
+            border-bottom-right-radius: 4px;
+        }
+        .message.assistant {
+            align-self: flex-start;
+            background: #f7f8fa;
+            color: #1a1a1a;
+            border-bottom-left-radius: 4px;
+            border: 1px solid #eef0f3;
+        }
+        /* Markdown 内容样式 */
+        .message.assistant h1, .message.assistant h2, .message.assistant h3 {
+            margin: 8px 0 6px;
+            font-size: 15px;
+            font-weight: 600;
+        }
+        .message.assistant p { margin: 4px 0; }
+        .message.assistant ul, .message.assistant ol {
+            margin: 6px 0;
+            padding-left: 20px;
+        }
+        .message.assistant li { margin: 3px 0; }
+        .message.assistant strong { color: #667eea; }
+        .message.assistant code {
+            background: #eef0f3;
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-size: 13px;
+        }
+        .message.assistant hr {
+            border: none;
+            border-top: 1px solid #e5e7eb;
+            margin: 10px 0;
+        }
+
+        /* 工具调用卡片 */
+        .tool-card {
+            align-self: flex-start;
+            max-width: 82%;
+            background: #fffbeb;
+            border: 1px solid #fde68a;
+            border-radius: 10px;
+            padding: 10px 14px;
+            font-size: 13px;
+            animation: fadeIn 0.3s ease;
+        }
+        .tool-card .tool-title {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            color: #92400e;
+            font-weight: 600;
+            margin-bottom: 4px;
+        }
+        .tool-card .tool-icon { font-size: 14px; }
+        .tool-card .tool-args {
+            color: #78716c;
+            font-family: monospace;
+            font-size: 12px;
+            background: #fef3c7;
+            padding: 4px 8px;
+            border-radius: 4px;
+            display: inline-block;
+        }
+        .tool-card .tool-result-preview {
+            color: #57534e;
+            margin-top: 6px;
+            font-size: 12px;
+            max-height: 60px;
+            overflow: hidden;
+            position: relative;
+        }
+        .tool-card .tool-result-preview::after {
+            content: '';
+            position: absolute;
+            bottom: 0; left: 0; right: 0;
+            height: 20px;
+            background: linear-gradient(transparent, #fffbeb);
+        }
+
+        /* Query Rewrite 提示 */
+        .rewrite-card {
+            align-self: center;
+            background: #eff6ff;
+            border: 1px solid #bfdbfe;
+            border-radius: 8px;
+            padding: 6px 14px;
+            font-size: 12px;
+            color: #1e40af;
+            animation: fadeIn 0.3s ease;
+        }
+        .rewrite-card .rewrite-original {
+            text-decoration: line-through;
+            color: #94a3b8;
+            margin-right: 8px;
+        }
+
+        /* 来源引用 */
+        .sources {
+            margin-top: 10px;
+            padding-top: 8px;
+            border-top: 1px solid #e5e7eb;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+        }
+        .source-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+            background: #eef2ff;
+            color: #4f46e5;
+            padding: 3px 10px;
+            border-radius: 12px;
+            font-size: 11px;
+            font-weight: 500;
+        }
+        .source-badge::before { content: '📄'; }
+
+        /* 输入区 */
+        .chat-input {
+            display: flex;
+            padding: 16px 20px;
+            border-top: 1px solid #eee;
+            gap: 10px;
+            background: #fff;
+        }
+        .chat-input input {
+            flex: 1;
+            padding: 12px 16px;
+            border: 1px solid #e5e7eb;
+            border-radius: 10px;
+            font-size: 14px;
+            outline: none;
+            transition: border-color 0.2s;
+        }
+        .chat-input input:focus {
+            border-color: #667eea;
+            box-shadow: 0 0 0 3px rgba(102,126,234,0.1);
+        }
+        .chat-input button {
+            padding: 12px 24px;
+            background: linear-gradient(135deg, #667eea, #764ba2);
+            color: #fff;
+            border: none;
+            border-radius: 10px;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: opacity 0.2s;
+        }
+        .chat-input button:hover:not(:disabled) { opacity: 0.9; }
+        .chat-input button:disabled {
+            background: #d1d5db;
+            cursor: not-allowed;
+        }
+
+        /* 加载动画 */
+        .typing-indicator {
+            display: flex;
+            gap: 4px;
+            padding: 14px 16px;
+        }
+        .typing-indicator span {
+            width: 8px; height: 8px;
+            background: #9ca3af;
+            border-radius: 50%;
+            animation: typing 1.4s infinite;
+        }
+        .typing-indicator span:nth-child(2) { animation-delay: 0.2s; }
+        .typing-indicator span:nth-child(3) { animation-delay: 0.4s; }
+        @keyframes typing {
+            0%, 60%, 100% { transform: translateY(0); opacity: 0.4; }
+            30% { transform: translateY(-6px); opacity: 1; }
+        }
+
+        /* 错误消息 */
+        .message.error {
+            align-self: flex-start;
+            background: #fef2f2;
+            color: #dc2626;
+            border: 1px solid #fecaca;
+        }
+
+        /* 反馈按钮 */
+        .feedback-bar {
+            margin-top: 8px;
+            padding-top: 8px;
+            border-top: 1px solid #e5e7eb;
+            display: flex;
+            gap: 8px;
+            align-items: center;
+        }
+        .feedback-btn {
+            background: none;
+            border: 1px solid #e5e7eb;
+            border-radius: 6px;
+            padding: 4px 10px;
+            font-size: 13px;
+            cursor: pointer;
+            transition: all 0.2s;
+            color: #6b7280;
+        }
+        .feedback-btn:hover:not(:disabled) {
+            background: #f3f4f6;
+            border-color: #d1d5db;
+        }
+        .feedback-btn.active-up {
+            background: #ecfdf5;
+            border-color: #6ee7b7;
+            color: #059669;
+        }
+        .feedback-btn.active-down {
+            background: #fef2f2;
+            border-color: #fca5a5;
+            color: #dc2626;
+        }
+        .feedback-btn:disabled {
+            cursor: default;
+            opacity: 0.7;
+        }
+        .feedback-msg {
+            font-size: 12px;
+            color: #6b7280;
+        }
+
+        /* HITL 确认弹窗 */
+        .hitl-card {
+            align-self: flex-start;
+            max-width: 82%;
+            background: #fff7ed;
+            border: 1px solid #fdba74;
+            border-radius: 12px;
+            padding: 14px 18px;
+            animation: fadeIn 0.3s ease;
+        }
+        .hitl-card .hitl-title {
+            font-weight: 600;
+            color: #9a3412;
+            margin-bottom: 6px;
+            font-size: 14px;
+        }
+        .hitl-card .hitl-body {
+            color: #7c2d12;
+            font-size: 13px;
+            margin-bottom: 12px;
+            line-height: 1.6;
+        }
+        .hitl-card .hitl-buttons {
+            display: flex;
+            gap: 10px;
+        }
+        .hitl-card .hitl-confirm {
+            background: #dc2626;
+            color: #fff;
+            border: none;
+            padding: 8px 18px;
+            border-radius: 8px;
+            font-size: 13px;
+            font-weight: 600;
+            cursor: pointer;
+        }
+        .hitl-card .hitl-confirm:hover { background: #b91c1c; }
+        .hitl-card .hitl-cancel {
+            background: #fff;
+            color: #6b7280;
+            border: 1px solid #d1d5db;
+            padding: 8px 18px;
+            border-radius: 8px;
+            font-size: 13px;
+            cursor: pointer;
+        }
+        .hitl-card .hitl-cancel:hover { background: #f9fafb; }
+        .hitl-card .hitl-done {
+            color: #059669;
+            font-size: 13px;
+            font-weight: 600;
+        }
+    </style>
+</head>
+<body>
+    <div class="chat-container">
+        <div class="chat-header">
+            <span class="status-dot"></span>
+            电商客服助手
+            <span style="font-size:12px;font-weight:400;opacity:0.8;margin-left:auto;">在线</span>
+            <button id="newChatBtn" style="margin-left:12px;background:none;border:1px solid rgba(255,255,255,0.3);color:#fff;padding:4px 12px;border-radius:6px;font-size:12px;cursor:pointer;">新对话</button>
+        </div>
+        <div class="chat-messages" id="messages">
+            <div class="message assistant">您好！我是电商客服助手，有什么可以帮您的吗？😊</div>
+        </div>
+        <div class="chat-input">
+            <input type="text" id="input" placeholder="输入您的问题，回车发送..." autocomplete="off">
+            <button id="sendBtn" onclick="sendMessage()">发送</button>
+        </div>
+    </div>
+
+    <script>
+        const messagesDiv = document.getElementById('messages');
+        const input = document.getElementById('input');
+        const sendBtn = document.getElementById('sendBtn');
+        let isLoading = false;
+
+        // 配置 marked
+        if (typeof marked !== 'undefined') {
+            marked.setOptions({ breaks: true, gfm: true });
+        }
+
+        // 会话ID
+        let sessionId = localStorage.getItem('ecom_session_id');
+        if (!sessionId) {
+            sessionId = 'sess_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
+            localStorage.setItem('ecom_session_id', sessionId);
+        }
+
+        // 对话历史持久化（localStorage）
+        const STORAGE_KEY = 'ecom_chat_history_' + sessionId;
+
+        function saveMessage(role, content) {
+            const history = JSON.parse(localStorage.getItem(STORAGE_KEY) || '[]');
+            history.push({ role, content, time: Date.now() });
+            localStorage.setItem(STORAGE_KEY, JSON.stringify(history));
+        }
+
+        function loadHistory() {
+            const history = JSON.parse(localStorage.getItem(STORAGE_KEY) || '[]');
+            if (history.length === 0) return;
+            // 保留默认欢迎语，在其后追加历史消息
+            const welcome = messagesDiv.querySelector('.message.assistant');
+            messagesDiv.innerHTML = '';
+            if (welcome) messagesDiv.appendChild(welcome);
+            history.forEach(msg => {
+                const div = document.createElement('div');
+                div.className = 'message ' + msg.role;
+                if (msg.role === 'assistant') {
+                    div.innerHTML = renderMarkdown(msg.content);
+                } else {
+                    div.textContent = msg.content;
+                }
+                messagesDiv.appendChild(div);
+            });
+            scrollToBottom();
+        }
+
+        function clearHistory() {
+            localStorage.removeItem(STORAGE_KEY);
+            // 生成新会话ID
+            sessionId = 'sess_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
+            localStorage.setItem('ecom_session_id', sessionId);
+            location.reload();
+        }
+
+        // 页面加载时恢复历史
+        loadHistory();
+
+        // 新对话按钮
+        document.getElementById('newChatBtn').addEventListener('click', clearHistory);
+
+        input.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter' && !isLoading) sendMessage();
+        });
+
+        function scrollToBottom() {
+            messagesDiv.scrollTop = messagesDiv.scrollHeight;
+        }
+
+        // 渲染 Markdown
+        function renderMarkdown(text) {
+            if (typeof marked !== 'undefined') {
+                try {
+                    return marked.parse(text);
+                } catch (e) {
+                    return text.replace(/\n/g, '<br>');
+                }
+            }
+            return text.replace(/\n/g, '<br>');
+        }
+
+        // 从工具结果中提取来源文档
+        function extractSources(content) {
+            const sources = [];
+            const regex = /\[来自\s+([^\]]+)\]/g;
+            let match;
+            while ((match = regex.exec(content)) !== null) {
+                if (!sources.includes(match[1])) {
+                    sources.push(match[1]);
+                }
+            }
+            return sources;
+        }
+
+        // 添加反馈按钮（👍/👎）
+        function addFeedbackButtons(container, question, answer) {
+            const bar = document.createElement('div');
+            bar.className = 'feedback-bar';
+
+            const upBtn = document.createElement('button');
+            upBtn.className = 'feedback-btn';
+            upBtn.innerHTML = '👍 有用';
+            upBtn.onclick = () => sendFeedback(question, answer, 'up', upBtn, downBtn, msg);
+
+            const downBtn = document.createElement('button');
+            downBtn.className = 'feedback-btn';
+            downBtn.innerHTML = '👎 没用';
+            downBtn.onclick = () => sendFeedback(question, answer, 'down', upBtn, downBtn, msg);
+
+            const msg = document.createElement('span');
+            msg.className = 'feedback-msg';
+
+            bar.appendChild(upBtn);
+            bar.appendChild(downBtn);
+            bar.appendChild(msg);
+            container.appendChild(bar);
+        }
+
+        // 发送反馈
+        async function sendFeedback(question, answer, rating, upBtn, downBtn, msgEl) {
+            upBtn.disabled = true;
+            downBtn.disabled = true;
+            try {
+                const resp = await fetch('/api/feedback', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ question, answer, rating, session_id: sessionId })
+                });
+                const data = await resp.json();
+                if (rating === 'up') {
+                    upBtn.classList.add('active-up');
+                    msgEl.textContent = '✅ 已收录到知识库';
+                } else {
+                    downBtn.classList.add('active-down');
+                    msgEl.textContent = '📝 已记录，后续优化';
+                }
+            } catch (e) {
+                msgEl.textContent = '反馈失败';
+            }
+        }
+
+        // HITL：显示人工确认弹窗（支持删除和退款）
+        function showHitlConfirm(orderId, message) {
+            const isRefund = message.includes('退款');
+            const action = isRefund ? '退款' : '删除';
+            const confirmText = `确认${action}`;
+            const cancelText = '取消';
+
+            const card = document.createElement('div');
+            card.className = 'hitl-card';
+            card.innerHTML = `
+                <div class="hitl-title">⚠️ 需要人工确认</div>
+                <div class="hitl-body">${message.replace('[HITL_CONFIRM]', '').trim()}</div>
+                <div class="hitl-buttons">
+                    <button class="hitl-confirm">${confirmText}</button>
+                    <button class="hitl-cancel">${cancelText}</button>
+                </div>
+            `;
+            messagesDiv.appendChild(card);
+            scrollToBottom();
+
+            const confirmBtn = card.querySelector('.hitl-confirm');
+            const cancelBtn = card.querySelector('.hitl-cancel');
+
+            confirmBtn.onclick = () => {
+                confirmBtn.disabled = true;
+                cancelBtn.disabled = true;
+                card.querySelector('.hitl-buttons').innerHTML = `<span class="hitl-done">✅ 已确认，正在执行${action}...</span>`;
+                input.value = `确认${action}订单${orderId}`;
+                sendMessage();
+            };
+            cancelBtn.onclick = () => {
+                confirmBtn.disabled = true;
+                cancelBtn.disabled = true;
+                card.querySelector('.hitl-buttons').innerHTML = '<span class="hitl-done">已取消</span>';
+                input.value = `取消${action}`;
+                sendMessage();
+            };
+        }
+
+        // 添加工具调用卡片
+        function addToolCard(name, args, resultPreview) {
+            const card = document.createElement('div');
+            card.className = 'tool-card';
+            const argsStr = args ? JSON.stringify(args) : '';
+            card.innerHTML = `
+                <div class="tool-title">
+                    <span class="tool-icon">🔧</span>
+                    调用工具：${name}
+                </div>
+                ${argsStr ? `<div class="tool-args">${argsStr}</div>` : ''}
+                ${resultPreview ? `<div class="tool-result-preview">${resultPreview}</div>` : ''}
+            `;
+            messagesDiv.appendChild(card);
+            scrollToBottom();
+            return card;
+        }
+
+        // 添加 Query Rewrite 提示
+        function addRewriteCard(original, rewritten) {
+            const card = document.createElement('div');
+            card.className = 'rewrite-card';
+            card.innerHTML = `
+                <span class="rewrite-original">${original}</span>
+                → 已改写为：<strong>${rewritten}</strong>
+            `;
+            messagesDiv.appendChild(card);
+            scrollToBottom();
+        }
+
+        async function sendMessage() {
+            const text = input.value.trim();
+            if (!text || isLoading) return;
+
+            isLoading = true;
+            sendBtn.disabled = true;
+            input.value = '';
+
+            // 显示用户消息
+            const userDiv = document.createElement('div');
+            userDiv.className = 'message user';
+            userDiv.textContent = text;
+            messagesDiv.appendChild(userDiv);
+            saveMessage('user', text);
+
+            // 显示加载动画
+            const typingDiv = document.createElement('div');
+            typingDiv.className = 'message assistant typing-indicator';
+            typingDiv.innerHTML = '<span></span><span></span><span></span>';
+            messagesDiv.appendChild(typingDiv);
+            scrollToBottom();
+
+            // 收集当前回答的来源
+            let currentSources = [];
+            let assistantDiv = null;
+            let fullText = '';
+
+            try {
+                const response = await fetch('/api/chat', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ message: text, session_id: sessionId })
+                });
+
+                if (!response.ok) {
+                    throw new Error(`服务器错误 ${response.status}`);
+                }
+
+                const reader = response.body.getReader();
+                const decoder = new TextDecoder();
+                let buffer = '';
+
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+
+                    buffer += decoder.decode(value, { stream: true });
+                    const lines = buffer.split('\n\n');
+                    buffer = lines.pop();
+
+                    for (const line of lines) {
+                        if (!line.startsWith('data: ')) continue;
+                        const event = JSON.parse(line.slice(6));
+
+                        if (event.type === 'rewrite') {
+                            // Query Rewrite 提示
+                            addRewriteCard(event.original, event.rewritten);
+
+                        } else if (event.type === 'tool') {
+                            // 工具调用（先创建卡片，结果后补）
+                            addToolCard(event.name, event.args, null);
+
+                        } else if (event.type === 'tool_result') {
+                            // 工具结果：提取来源，更新最后一个工具卡片
+                            const sources = extractSources(event.content);
+                            currentSources = [...new Set([...currentSources, ...sources])];
+
+                            // HITL：检测删除订单确认请求
+                            if (event.content.includes('[HITL_CONFIRM]')) {
+                                const lastToolCard = messagesDiv.querySelector('.tool-card:last-of-type');
+                                if (lastToolCard) {
+                                    const orderMatch = event.content.match(/订单\s*(ORD\d+)/);
+                                    const orderId = orderMatch ? orderMatch[1] : '';
+                                    showHitlConfirm(orderId, event.content);
+                                }
+                            }
+
+                            // 更新最后一个工具卡片的预览
+                            const lastCard = messagesDiv.querySelector('.tool-card:last-of-type');
+                            if (lastCard && !lastCard.querySelector('.tool-result-preview')) {
+                                const preview = document.createElement('div');
+                                preview.className = 'tool-result-preview';
+                                preview.textContent = event.content.slice(0, 150);
+                                lastCard.appendChild(preview);
+                            }
+
+                        } else if (event.type === 'token') {
+                            // 流式输出回答
+                            if (!assistantDiv) {
+                                typingDiv.remove();
+                                assistantDiv = document.createElement('div');
+                                assistantDiv.className = 'message assistant';
+                                messagesDiv.appendChild(assistantDiv);
+                            }
+                            fullText += event.content;
+                            assistantDiv.innerHTML = renderMarkdown(fullText);
+                            scrollToBottom();
+
+                        } else if (event.type === 'done') {
+                            // 回答结束，添加来源引用
+                            if (assistantDiv && currentSources.length > 0) {
+                                const sourcesDiv = document.createElement('div');
+                                sourcesDiv.className = 'sources';
+                                currentSources.forEach(src => {
+                                    const badge = document.createElement('span');
+                                    badge.className = 'source-badge';
+                                    badge.textContent = src;
+                                    sourcesDiv.appendChild(badge);
+                                });
+                                assistantDiv.appendChild(sourcesDiv);
+                            }
+                            // 添加反馈按钮
+                            if (assistantDiv && fullText) {
+                                addFeedbackButtons(assistantDiv, text, fullText);
+                                saveMessage('assistant', fullText);
+                            }
+                            scrollToBottom();
+                        }
+                    }
+                }
+
+                // 如果没有收到任何 token
+                if (!assistantDiv) {
+                    typingDiv.remove();
+                    const emptyDiv = document.createElement('div');
+                    emptyDiv.className = 'message assistant';
+                    emptyDiv.textContent = '抱歉，没有收到回复，请重试。';
+                    messagesDiv.appendChild(emptyDiv);
+                }
+
+            } catch (error) {
+                typingDiv.remove();
+                const errorDiv = document.createElement('div');
+                errorDiv.className = 'message error';
+                errorDiv.textContent = '⚠️ 出错了：' + error.message;
+                messagesDiv.appendChild(errorDiv);
+                scrollToBottom();
+            }
+
+            isLoading = false;
+            sendBtn.disabled = false;
+            input.focus();
+        }
+    </script>
+</body>
+</html>

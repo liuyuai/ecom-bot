@@ -1,0 +1,21 @@
+# 密钥（所有环境的 .env 都不提交，只提交 .env.example）
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# 运行时数据
+chroma_db/
+checkpoints.db
+embed_cache.json
+logs/
+feedback/
+*.log
+
+# 编辑器
+.vscode/
+.idea/
