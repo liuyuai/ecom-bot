@@ -11,6 +11,7 @@ __pycache__/
 # 运行时数据
 chroma_db/
 checkpoints.db
+traces.db
 embed_cache.json
 logs/
 feedback/

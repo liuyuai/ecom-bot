@@ -27,6 +27,7 @@ from services.intent import classify_intent, get_direct_reply, build_intent_cont
 from services.feedback import save_good_feedback, save_bad_feedback, get_good_feedback_count, get_bad_feedback_count
 from services.security import security_check, filter_output
 from services.health import run_health_checks
+from services.trace import init_db, start_trace, finish_trace, record_tool_call, record_audit, get_trace_stats
 from common.metrics import metrics
 from common.logger import get_logger, new_request_id, set_request_id
 from config import (
@@ -65,6 +66,8 @@ async def lifespan(app: FastAPI):
         workflow = build_workflow()
         app.state.agent = workflow.compile(checkpointer=cp)
         app.state.checkpointer = cp
+        # 初始化 Trace 留痕数据库
+        await init_db()
         logger.info("应用启动完成，Agent 已编译")
         yield
         logger.info("正在关闭，等待请求完成...")
@@ -197,6 +200,9 @@ async def chat(request: Request, chat_request: ChatRequest):
         )
     user_message = security["cleaned_input"]
 
+    # 启动 Trace 留痕
+    trace_id = await start_trace(rid, chat_request.session_id, user_message)
+
     async def event_generator():
         set_request_id(rid)
         config = {"configurable": {"thread_id": chat_request.session_id}}
@@ -213,6 +219,9 @@ async def chat(request: Request, chat_request: ChatRequest):
             yield f"data: {json.dumps({'type': 'done', 'messages': [{'type': 'ai', 'content': direct_reply}]}, ensure_ascii=False)}\n\n"
             elapsed = time.time() - start_time
             metrics.record_success(chat_request.session_id, elapsed, [])
+            await finish_trace(trace_id, answer=direct_reply, tools_called=[],
+                               latency_ms=elapsed * 1000, status="success",
+                               intent=intent_result.intent.value)
             return
 
         # 3. 读取会话历史
@@ -244,17 +253,35 @@ async def chat(request: Request, chat_request: ChatRequest):
 
         # 5. 调用 Agent（带输出过滤）
         tool_calls = []
+        tool_start_times = {}   # 记录每个工具调用的开始时间，用于计算延迟
         response_text = ""       # 累积所有 token 文本，用于泄露检测
         output_leaked = False    # 是否检测到输出泄露
         try:
             async for event in stream_agent(app.state.agent, rewritten, chat_request.session_id):
                 if event["type"] == "tool":
                     tool_calls.append(event["name"])
+                    tool_start_times[event["name"]] = time.time()
                     logger.info(f"工具调用 | {event['name']}({json.dumps(event['args'], ensure_ascii=False)})")
                     yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
 
                 elif event["type"] == "tool_result":
                     logger.debug(f"工具结果 | {event['content'][:80]}")
+                    # 记录工具调用明细到 trace
+                    tool_name = event.get("name", "unknown")
+                    start_t = tool_start_times.pop(tool_name, start_time)
+                    tool_latency = (time.time() - start_t) * 1000
+                    is_success = not event.get("content", "").startswith("[错误")
+                    await record_tool_call(
+                        trace_id=trace_id,
+                        request_id=rid,
+                        session_id=chat_request.session_id,
+                        tool_name=tool_name,
+                        params=event.get("args", {}),
+                        result=event.get("content", ""),
+                        latency_ms=tool_latency,
+                        success=is_success,
+                        error="" if is_success else event.get("content", "")[:200],
+                    )
                     yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
 
                 elif event["type"] == "token":
@@ -285,10 +312,20 @@ async def chat(request: Request, chat_request: ChatRequest):
         except Exception as e:
             logger.error(f"Agent 执行失败: {e}", exc_info=True)
             yield f"data: {json.dumps({'type': 'error', 'message': '服务暂时不可用，请稍后重试'}, ensure_ascii=False)}\n\n"
+            elapsed = time.time() - start_time
+            metrics.record_failure(chat_request.session_id, elapsed)
+            await finish_trace(trace_id, answer="", tools_called=tool_calls,
+                               latency_ms=elapsed * 1000, status="failed",
+                               intent=intent_result.intent.value)
+            return
 
         elapsed = time.time() - start_time
         logger.info(f"请求完成 | 耗时={elapsed:.2f}s | 工具调用={tool_calls or '无'}")
         metrics.record_success(chat_request.session_id, elapsed, tool_calls)
+        status = "blocked" if output_leaked else "success"
+        await finish_trace(trace_id, answer=response_text, tools_called=tool_calls,
+                           latency_ms=elapsed * 1000, status=status,
+                           intent=intent_result.intent.value)
 
     return StreamingResponse(
         event_generator(),
@@ -325,6 +362,12 @@ async def feedback_stats():
     }
 
 
+@app.get("/api/trace/stats")
+async def trace_stats(days: int = 7):
+    """Trace 留痕统计：最近 N 天的请求、工具调用、审计数据"""
+    return await get_trace_stats(days=days)
+
+
 @app.post("/api/hitl/confirm")
 @limiter.limit("10/minute")
 async def hitl_confirm(request: Request, hitl_request: HitlConfirmRequest):
@@ -353,6 +396,8 @@ async def hitl_confirm(request: Request, hitl_request: HitlConfirmRequest):
         if not pending:
             logger.warning(f"HITL验证失败 | 会话{hitl_request.session_id}中未找到订单{hitl_request.order_id}的确认请求")
             metrics.record_security_block()
+            await record_audit(hitl_request.session_id, hitl_request.action, hitl_request.order_id,
+                               "验证失败：会话中无对应确认请求", success=False)
             return JSONResponse(
                 status_code=403,
                 content={"error": "未找到对应的操作请求，请先在对话中发起删除/退款申请"},
@@ -369,6 +414,11 @@ async def hitl_confirm(request: Request, hitl_request: HitlConfirmRequest):
         result = execute_delete_order.invoke({"order_id": hitl_request.order_id})
     else:  # refund
         result = execute_refund_order.invoke({"order_id": hitl_request.order_id})
+
+    # 记录审计日志
+    audit_success = "✅" in result or "成功" in result
+    await record_audit(hitl_request.session_id, hitl_request.action, hitl_request.order_id,
+                       result, success=audit_success)
 
     logger.info(f"HITL执行结果 | {result[:80]}")
     return {"result": result}
