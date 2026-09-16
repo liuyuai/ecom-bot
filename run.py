@@ -53,8 +53,12 @@ def cmd_test():
 
 
 def cmd_build():
-    """重建向量库（知识库文档变更后执行）"""
-    run([sys.executable, "rag/ingest.py"], cwd=SRC)
+    """增量更新向量库（知识库文档变更后执行）
+    用法：python run.py build          # 增量更新，只处理变化的文件
+          python run.py build --force  # 全量删除重建
+    """
+    extra_args = sys.argv[2:] if len(sys.argv) > 2 else []
+    run([sys.executable, "rag/ingest.py"] + extra_args, cwd=SRC)
 
 
 def cmd_docker_up():
