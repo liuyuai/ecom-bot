@@ -25,6 +25,7 @@ from agent.tools import execute_delete_order, execute_refund_order
 from services.query_rewrite import rewrite_query
 from services.feedback import save_good_feedback, save_bad_feedback, get_good_feedback_count, get_bad_feedback_count
 from services.security import security_check, filter_output
+from services.health import run_health_checks
 from common.metrics import metrics
 from common.logger import get_logger, new_request_id, set_request_id
 from config import (
@@ -144,10 +145,26 @@ async def index():
     return FileResponse(os.path.join(STATIC_DIR, "index.html"))
 
 
+@app.get("/health/live")
+async def health_live():
+    """存活探针：进程是否在运行（负载均衡/容器编排用）"""
+    return {"status": "ok", "timestamp": time.time()}
+
+
+@app.get("/health/ready")
+async def health_ready():
+    """就绪探针：所有依赖是否可用（流量接入前检查）"""
+    result = await run_health_checks(getattr(app.state, "checkpointer", None))
+    status_code = 200 if result["status"] == "ok" else 503
+    return JSONResponse(content=result, status_code=status_code)
+
+
 @app.get("/health")
 async def health():
-    """健康检查：负载均衡探活用"""
-    return {"status": "ok", "timestamp": time.time()}
+    """健康检查：兼容旧接口，返回完整检查结果"""
+    result = await run_health_checks(getattr(app.state, "checkpointer", None))
+    status_code = 200 if result["status"] == "ok" else 503
+    return JSONResponse(content=result, status_code=status_code)
 
 
 @app.get("/metrics")
