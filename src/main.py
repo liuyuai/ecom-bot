@@ -23,6 +23,7 @@ from slowapi.errors import RateLimitExceeded
 from agent.workflow import build_workflow, stream_agent
 from agent.tools import execute_delete_order, execute_refund_order
 from services.query_rewrite import rewrite_query
+from services.intent import classify_intent, get_direct_reply, build_intent_context
 from services.feedback import save_good_feedback, save_bad_feedback, get_good_feedback_count, get_bad_feedback_count
 from services.security import security_check, filter_output
 from services.health import run_health_checks
@@ -198,7 +199,21 @@ async def chat(request: Request, chat_request: ChatRequest):
         set_request_id(rid)
         config = {"configurable": {"thread_id": chat_request.session_id}}
 
-        # 1. 读取会话历史
+        # 1. 意图分类（生产级：3秒超时，低置信度降级）
+        intent_result = await classify_intent(user_message)
+        yield f"data: {json.dumps({'type': 'intent', 'intent': intent_result.intent.value, 'confidence': round(intent_result.confidence, 2)}, ensure_ascii=False)}\n\n"
+
+        # 2. 直接回复意图（投诉/问候）→ 不走 Agent，省 LLM 调用和延迟
+        direct_reply = get_direct_reply(intent_result.intent, user_message)
+        if direct_reply:
+            logger.info(f"意图直接回复 | {intent_result.intent.value} | 跳过Agent")
+            yield f"data: {json.dumps({'type': 'token', 'content': direct_reply}, ensure_ascii=False)}\n\n"
+            yield f"data: {json.dumps({'type': 'done', 'messages': [{'type': 'ai', 'content': direct_reply}]}, ensure_ascii=False)}\n\n"
+            elapsed = time.time() - start_time
+            metrics.record_success(chat_request.session_id, elapsed, [])
+            return
+
+        # 3. 读取会话历史
         try:
             state = await app.state.agent.aget_state(config)
             history = [
@@ -220,7 +235,12 @@ async def chat(request: Request, chat_request: ChatRequest):
             logger.error(f"Query Rewrite 失败: {e}，使用原问题")
             rewritten = user_message
 
-        # 3. 调用 Agent（带输出过滤）
+        # 4. 注入意图上下文，帮助 Agent 更快选对工具（减少LLM判断负担）
+        intent_context = build_intent_context(intent_result.intent)
+        if intent_context:
+            rewritten = f"{intent_context}\n\n用户问题：{rewritten}"
+
+        # 5. 调用 Agent（带输出过滤）
         tool_calls = []
         response_text = ""       # 累积所有 token 文本，用于泄露检测
         output_leaked = False    # 是否检测到输出泄露
