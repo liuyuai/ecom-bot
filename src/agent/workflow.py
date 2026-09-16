@@ -55,29 +55,41 @@ def build_workflow():
 
 async def stream_agent(agent_app, question: str, session_id: str):
     """
-    异步流式调用 Agent，按节点输出执行过程。
+    真·流式调用 Agent：用 astream_events 穿透节点，拿到 LLM 逐 token 事件。
     agent_app: 编译好的 LangGraph 应用（由 lifespan 初始化）
     session_id: 会话ID，用于会话隔离
     """
     config = {"configurable": {"thread_id": session_id}}
 
-    async for event in agent_app.astream(
+    async for event in agent_app.astream_events(
         {"messages": [HumanMessage(content=question)]},
         config=config,
+        version="v2",
     ):
-        for node_name, state_update in event.items():
-            if "messages" not in state_update:
-                continue
-            for msg in state_update["messages"]:
-                if msg.type == "ai":
-                    if msg.tool_calls:
-                        for tc in msg.tool_calls:
-                            yield {"type": "tool", "name": tc["name"], "args": tc["args"]}
-                    if msg.content:
-                        yield {"type": "token", "content": msg.content}
-                elif msg.type == "tool":
-                    yield {"type": "tool_result", "content": msg.content}
+        event_type = event["event"]
 
+        # LLM 逐 token 输出文本
+        if event_type == "on_chat_model_stream":
+            chunk = event["data"]["chunk"]
+            # 纯文本 token（不是工具调用的 chunk）
+            if chunk.content:
+                yield {"type": "token", "content": chunk.content}
+
+        # 工具开始执行（此时工具名和参数已完整）
+        elif event_type == "on_tool_start":
+            tool_name = event.get("name", "")
+            tool_input = event.get("data", {}).get("input", {})
+            # 过滤掉 LangGraph 内部节点，只上报我们的业务工具
+            if tool_name and not tool_name.startswith("LangGraph"):
+                yield {"type": "tool", "name": tool_name, "args": tool_input}
+
+        # 工具执行完毕
+        elif event_type == "on_tool_end":
+            tool_output = event.get("data", {}).get("output", "")
+            if tool_output:
+                yield {"type": "tool_result", "content": tool_output}
+
+    # 流结束后拿最终 state
     final_state = await agent_app.aget_state(config)
     serializable_messages = [
         {"type": msg.type, "content": msg.content}

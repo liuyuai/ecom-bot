@@ -517,6 +517,7 @@
         function showHitlConfirm(orderId, message) {
             const isRefund = message.includes('退款');
             const action = isRefund ? '退款' : '删除';
+            const actionType = isRefund ? 'refund' : 'delete';
             const confirmText = `确认${action}`;
             const cancelText = '取消';
 
@@ -536,20 +537,42 @@
             const confirmBtn = card.querySelector('.hitl-confirm');
             const cancelBtn = card.querySelector('.hitl-cancel');
 
-            confirmBtn.onclick = () => {
+            // 确认：直接调后端 /api/hitl/confirm，不经过大模型
+            confirmBtn.onclick = async () => {
                 confirmBtn.disabled = true;
                 cancelBtn.disabled = true;
                 card.querySelector('.hitl-buttons').innerHTML = `<span class="hitl-done">✅ 已确认，正在执行${action}...</span>`;
-                input.value = `确认${action}订单${orderId}`;
-                sendMessage();
+
+                try {
+                    const resp = await fetch('/api/hitl/confirm', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({action: actionType, order_id: orderId}),
+                    });
+                    const data = await resp.json();
+                    // 执行结果直接作为 AI 消息显示
+                    addPlainAIMessage(data.result);
+                    saveMessage('assistant', data.result);
+                } catch (e) {
+                    addPlainAIMessage('执行失败，请稍后重试或联系人工客服。');
+                }
             };
+
+            // 取消：仅显示已取消，不发请求
             cancelBtn.onclick = () => {
                 confirmBtn.disabled = true;
                 cancelBtn.disabled = true;
                 card.querySelector('.hitl-buttons').innerHTML = '<span class="hitl-done">已取消</span>';
-                input.value = `取消${action}`;
-                sendMessage();
             };
+        }
+
+        // 添加一条纯文本 AI 消息（HITL 执行结果用）
+        function addPlainAIMessage(text) {
+            const div = document.createElement('div');
+            div.className = 'message assistant';
+            div.innerHTML = renderMarkdown(text);
+            messagesDiv.appendChild(div);
+            scrollToBottom();
         }
 
         // 添加工具调用卡片

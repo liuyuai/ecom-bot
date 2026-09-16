@@ -1,10 +1,32 @@
 """Agent 层：工具定义"""
 from langchain_core.tools import tool
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
+import httpx
+
 from rag.retriever import format_docs, search_knowledge
 from data.repository import get_order, search_products, delete_order as data_delete_order, refund_order as data_refund_order, order_exists
 from common.logger import get_logger
 
 logger = get_logger("agent.tools")
+
+# 可重试的瞬时错误类型（超时、网络连接、5xx）
+RETRYABLE_EXCEPTIONS = (
+    TimeoutError,
+    ConnectionError,
+    httpx.ConnectError,
+    httpx.ReadTimeout,
+    httpx.WriteTimeout,
+    httpx.PoolTimeout,
+    httpx.RemoteProtocolError,
+)
+
+# 重试装饰器：最多 3 次，指数退避（1s → 2s → 4s），只重试瞬时错误
+retry_on_transient = retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=1, max=5),
+    retry=retry_if_exception_type(RETRYABLE_EXCEPTIONS),
+    reraise=True,
+)
 
 
 @tool
@@ -19,9 +41,13 @@ def search_knowledge_base(query: str) -> str:
             return "知识库中未找到相关信息，请尝试换个说法或联系人工客服。"
         logger.info(f"知识库检索命中 {len(docs)} 条 | query={query}")
         return format_docs(docs)
+    except RETRYABLE_EXCEPTIONS as e:
+        # 瞬时错误：Reranker/Embedding API 超时或网络问题
+        logger.error(f"知识库检索瞬时错误 | query={query} | error={e}")
+        return f"[错误:超时] 知识库检索暂时不可用（{type(e).__name__}），可以稍后重试。"
     except Exception as e:
         logger.error(f"知识库检索失败 | query={query} | error={e}")
-        return f"[知识库检索失败] {type(e).__name__}: {str(e)[:200]}。请稍后重试或联系人工客服。"
+        return f"[错误:系统异常] 知识库检索失败（{type(e).__name__}），请联系人工客服。"
 
 
 @tool
@@ -32,7 +58,8 @@ def query_order(order_id: str) -> str:
     try:
         order = get_order(order_id)
         if not order:
-            return f"未找到订单 {order_id}，请确认订单号是否正确"
+            # 永久错误：订单不存在，重试也没用
+            return f"[错误:不存在] 未找到订单 {order_id}，请确认订单号是否正确。"
         return (
             f"订单 {order['order_id']}\n"
             f"商品：{order['product']} x{order['quantity']}\n"
@@ -41,8 +68,12 @@ def query_order(order_id: str) -> str:
             f"下单时间：{order['create_time']}\n"
             f"物流：{order['logistics']}"
         )
+    except RETRYABLE_EXCEPTIONS as e:
+        # 瞬时错误：订单 API 超时，可重试
+        logger.error(f"订单查询瞬时错误 | order={order_id} | error={e}")
+        return f"[错误:超时] 订单查询暂时不可用（{type(e).__name__}），可以稍后重试。"
     except Exception as e:
-        return f"[订单查询失败] {type(e).__name__}: {str(e)[:200]}。请稍后重试。"
+        return f"[错误:系统异常] 订单查询失败（{type(e).__name__}），请稍后重试或联系人工客服。"
 
 
 @tool
@@ -54,8 +85,11 @@ def product_search(keyword: str) -> str:
     """
     try:
         return search_products(keyword)
+    except RETRYABLE_EXCEPTIONS as e:
+        logger.error(f"商品搜索瞬时错误 | keyword={keyword} | error={e}")
+        return f"[错误:超时] 商品搜索暂时不可用（{type(e).__name__}），可以稍后重试。"
     except Exception as e:
-        return f"[商品搜索失败] {type(e).__name__}: {str(e)[:200]}。请稍后重试。"
+        return f"[错误:系统异常] 商品搜索失败（{type(e).__name__}），请稍后重试。"
 
 
 @tool
@@ -65,7 +99,7 @@ def delete_order(order_id: str) -> str:
     当用户说"删除订单""取消订单""删掉订单XXX"时调用此工具。
     """
     if not order_exists(order_id):
-        return f"订单 {order_id} 不存在，无法删除。"
+        return f"[错误:不存在] 订单 {order_id} 不存在，无法删除。"
 
     return (
         f"[HITL_CONFIRM] 即将删除订单 {order_id}。\n"
@@ -84,9 +118,9 @@ def execute_delete_order(order_id: str) -> str:
         if success:
             return f"✅ 订单 {order_id} 已成功删除。"
         else:
-            return f"❌ 删除失败，订单 {order_id} 不存在。"
+            return f"[错误:不存在] 删除失败，订单 {order_id} 不存在。"
     except Exception as e:
-        return f"[删除失败] {type(e).__name__}: {str(e)[:200]}。"
+        return f"[错误:系统异常] 删除失败（{type(e).__name__}），请稍后重试。"
 
 
 @tool
@@ -96,7 +130,7 @@ def refund_order(order_id: str, reason: str = "") -> str:
     当用户说"退款""退钱""申请退款"时调用此工具。
     """
     if not order_exists(order_id):
-        return f"订单 {order_id} 不存在，无法退款。"
+        return f"[错误:不存在] 订单 {order_id} 不存在，无法退款。"
 
     reason_text = f"\n退款原因：{reason}" if reason else ""
     return (
@@ -116,18 +150,18 @@ def execute_refund_order(order_id: str) -> str:
         if success:
             return f"✅ 订单 {order_id} 退款申请已提交，预计1-3个工作日原路退回。"
         else:
-            return f"❌ 退款失败，订单 {order_id} 不存在。"
+            return f"[错误:不存在] 退款失败，订单 {order_id} 不存在。"
     except Exception as e:
-        return f"[退款失败] {type(e).__name__}: {str(e)[:200]}。"
+        return f"[错误:系统异常] 退款失败（{type(e).__name__}），请稍后重试。"
 
 
 # 工具列表，传给大模型
+# 注意：execute_delete_order / execute_refund_order 不在列表中——
+# 这两个是危险操作，由后端 /api/hitl/confirm 直接执行，不暴露给大模型
 TOOLS = [
     search_knowledge_base,
     query_order,
     product_search,
     delete_order,
-    execute_delete_order,
     refund_order,
-    execute_refund_order,
 ]

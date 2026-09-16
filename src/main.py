@@ -21,9 +21,10 @@ from slowapi.errors import RateLimitExceeded
 
 # 各层导入
 from agent.workflow import build_workflow, stream_agent
+from agent.tools import execute_delete_order, execute_refund_order
 from services.query_rewrite import rewrite_query
 from services.feedback import save_good_feedback, save_bad_feedback, get_good_feedback_count, get_bad_feedback_count
-from services.security import security_check
+from services.security import security_check, filter_output
 from common.metrics import metrics
 from common.logger import get_logger, new_request_id, set_request_id
 from config import (
@@ -123,6 +124,19 @@ class FeedbackRequest(BaseModel):
         return v
 
 
+class HitlConfirmRequest(BaseModel):
+    """HITL 人工确认请求：用户确认后直接执行危险操作，不经过大模型"""
+    action: str = Field(..., description="操作类型：delete 或 refund")
+    order_id: str = Field(..., min_length=1, max_length=50)
+
+    @field_validator("action")
+    @classmethod
+    def validate_action(cls, v: str) -> str:
+        if v not in ("delete", "refund"):
+            raise ValueError("action 只能是 delete 或 refund")
+        return v
+
+
 # ========== 接口 ==========
 
 @app.get("/")
@@ -189,16 +203,46 @@ async def chat(request: Request, chat_request: ChatRequest):
             logger.error(f"Query Rewrite 失败: {e}，使用原问题")
             rewritten = user_message
 
-        # 3. 调用 Agent
+        # 3. 调用 Agent（带输出过滤）
         tool_calls = []
+        response_text = ""       # 累积所有 token 文本，用于泄露检测
+        output_leaked = False    # 是否检测到输出泄露
         try:
             async for event in stream_agent(app.state.agent, rewritten, chat_request.session_id):
                 if event["type"] == "tool":
                     tool_calls.append(event["name"])
                     logger.info(f"工具调用 | {event['name']}({json.dumps(event['args'], ensure_ascii=False)})")
+                    yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+
                 elif event["type"] == "tool_result":
                     logger.debug(f"工具结果 | {event['content'][:80]}")
-                yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+                    yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+
+                elif event["type"] == "token":
+                    # 累积文本，检测系统提示词泄露
+                    response_text += event["content"]
+                    if not output_leaked:
+                        check = filter_output(response_text)
+                        if check["leaked"]:
+                            output_leaked = True
+                            logger.warning(f"输出泄露已拦截 | 已发送{len(response_text)}字 | session={chat_request.session_id}")
+                            metrics.record_security_block()
+                            # 替换为安全回复
+                            yield f"data: {json.dumps({'type': 'token', 'content': check['filtered']}, ensure_ascii=False)}\n\n"
+                        else:
+                            yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+                    # 已泄露则丢弃后续 token，不再转发
+
+                elif event["type"] == "done":
+                    # 泄露时替换最终消息内容
+                    if output_leaked:
+                        for msg in event.get("messages", []):
+                            if msg["type"] == "ai":
+                                msg["content"] = "抱歉，我无法提供相关信息。有什么可以帮您的吗？"
+                    yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+
+                else:
+                    yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
         except Exception as e:
             logger.error(f"Agent 执行失败: {e}", exc_info=True)
             yield f"data: {json.dumps({'type': 'error', 'message': '服务暂时不可用，请稍后重试'}, ensure_ascii=False)}\n\n"
@@ -240,6 +284,24 @@ async def feedback_stats():
         "good_count": get_good_feedback_count(),
         "bad_count": get_bad_feedback_count(),
     }
+
+
+@app.post("/api/hitl/confirm")
+async def hitl_confirm(request: HitlConfirmRequest):
+    """
+    HITL 人工确认接口：用户确认后直接执行危险操作。
+    不经过大模型，代码强制执行，防止模型绕过确认直接调用。
+    """
+    rid = new_request_id()
+    logger.info(f"HITL确认 | action={request.action} | order={request.order_id}")
+
+    if request.action == "delete":
+        result = execute_delete_order.invoke({"order_id": request.order_id})
+    else:  # refund
+        result = execute_refund_order.invoke({"order_id": request.order_id})
+
+    logger.info(f"HITL执行结果 | {result[:80]}")
+    return {"result": result}
 
 
 if __name__ == "__main__":
