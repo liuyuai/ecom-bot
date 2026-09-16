@@ -32,6 +32,7 @@ from common.logger import get_logger, new_request_id, set_request_id
 from config import (
     SQLITE_DB_PATH, HOST, PORT, LOG_LEVEL,
     REDIS_URL, MAX_MESSAGE_LENGTH, RATE_LIMIT_PER_MINUTE,
+    CORS_ORIGINS,
 )
 
 logger = get_logger("api")
@@ -75,10 +76,10 @@ app = FastAPI(title="电商客服机器人", lifespan=lifespan)
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
-# CORS（生产环境应限制具体域名）
+# CORS：开发默认 "*"，生产环境在 .env 配置白名单域名
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=CORS_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

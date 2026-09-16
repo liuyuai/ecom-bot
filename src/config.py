@@ -114,6 +114,15 @@ RERANK_TIMEOUT = float(_get("RERANK_TIMEOUT", "10"))
 # ===== 限流 =====
 RATE_LIMIT_PER_MINUTE = int(_get("RATE_LIMIT_PER_MINUTE", "30"))
 
+# ===== CORS 跨域 =====
+# "*" = 允许所有域名（开发用）；生产环境配置具体域名，多个用逗号分隔
+# 示例：CORS_ORIGINS=https://shop.example.com,https://admin.example.com
+CORS_ORIGINS_RAW = _get("CORS_ORIGINS", "*")
+if CORS_ORIGINS_RAW == "*":
+    CORS_ORIGINS = ["*"]
+else:
+    CORS_ORIGINS = [o.strip() for o in CORS_ORIGINS_RAW.split(",") if o.strip()]
+
 # ===== Redis（生产环境会话存储，不配置则用 SQLite）=====
 REDIS_URL = _get("REDIS_URL", "")  # 如 redis://localhost:6379/0
 

@@ -21,6 +21,7 @@ logger = get_logger("retriever")
 # 全局缓存：BM25 索引和文档列表，避免每次检索都重建
 _bm25 = None
 _all_docs = None
+_bm25_doc_count = 0  # 构建 BM25 时 Chroma 的文档数，用于检测知识库变化
 
 
 def _tokenize(text: str) -> list:
@@ -29,13 +30,24 @@ def _tokenize(text: str) -> list:
 
 
 def _get_bm25_index():
-    """懒加载 BM25 索引（从 Chroma 取所有文档构建）"""
-    global _bm25, _all_docs
-    if _bm25 is not None:
-        return _bm25, _all_docs
+    """懒加载 BM25 索引（从 Chroma 取所有文档构建）
+
+    缓存失效机制：记录构建时的 Chroma 文档计数，
+    检索前比对当前计数，变化则自动重建（好评入库/增量更新后自动生效）。
+    """
+    global _bm25, _all_docs, _bm25_doc_count
 
     vs = get_vectorstore()
-    # 从 Chroma 取出所有文档
+    current_count = vs._collection.count() if hasattr(vs, "_collection") else len(vs.get()["documents"])
+
+    # 缓存有效：BM25 已构建 且 文档计数未变化
+    if _bm25 is not None and current_count == _bm25_doc_count:
+        return _bm25, _all_docs
+
+    # 缓存失效：重建 BM25 索引
+    if _bm25 is not None:
+        logger.info(f"BM25 缓存失效 | 旧计数={_bm25_doc_count} → 新计数={current_count}，重建索引")
+
     result = vs.get()
     _all_docs = []
     for i, doc_text in enumerate(result["documents"]):
@@ -43,9 +55,10 @@ def _get_bm25_index():
         from langchain_core.documents import Document
         _all_docs.append(Document(page_content=doc_text, metadata=metadata))
 
-    # 构建 BM25 索引
     tokenized_corpus = [_tokenize(doc.page_content) for doc in _all_docs]
     _bm25 = BM25Okapi(tokenized_corpus)
+    _bm25_doc_count = current_count
+    logger.info(f"BM25 索引已构建 | 文档数={current_count}")
     return _bm25, _all_docs
 
 
