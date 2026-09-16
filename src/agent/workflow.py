@@ -8,6 +8,7 @@ from langgraph.prebuilt import ToolNode
 from agent.prompt import ECOM_SYSTEM_PROMPT
 from agent.tools import TOOLS
 from services.llm import get_llm
+from services.memory import compress_messages
 from common.logger import get_logger
 
 logger = get_logger("agent.workflow")
@@ -19,7 +20,9 @@ class AgentState(TypedDict):
 
 async def agent_node(state: AgentState):
     """Agent 节点：异步调用大模型，决定调工具还是直接回答"""
-    messages = [SystemMessage(content=ECOM_SYSTEM_PROMPT)] + state["messages"]
+    # 滑动窗口+摘要：超过10轮时压缩旧对话，减少 token
+    compressed = await compress_messages(state["messages"])
+    messages = [SystemMessage(content=ECOM_SYSTEM_PROMPT)] + compressed
     llm = get_llm()
     llm_with_tools = llm.bind_tools(TOOLS)
     response = await llm_with_tools.ainvoke(messages)
