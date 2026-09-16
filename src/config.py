@@ -64,6 +64,13 @@ EMBED_API_KEY = _get("EMBED_API_KEY")
 EMBED_BASE_URL = _get("EMBED_BASE_URL", "https://api.siliconflow.cn/v1")
 EMBED_MODEL = _get("EMBED_MODEL", "BAAI/bge-large-zh-v1.5")
 
+# ===== 小模型（意图分类用，便宜快速）=====
+# 复用硅基流动的 API Key，用便宜的 7B 模型做分类
+SMALL_LLM_API_KEY = EMBED_API_KEY
+SMALL_LLM_BASE_URL = EMBED_BASE_URL
+SMALL_LLM_MODEL = _get("SMALL_LLM_MODEL", "Qwen/Qwen2.5-7B-Instruct")
+SMALL_LLM_CONFIDENCE_THRESHOLD = float(_get("SMALL_LLM_CONFIDENCE_THRESHOLD", "0.7"))
+
 # ===== Reranker =====
 RERANK_MODEL = _get("RERANK_MODEL", "BAAI/bge-reranker-v2-m3")
 
