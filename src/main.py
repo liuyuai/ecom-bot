@@ -131,6 +131,7 @@ class HitlConfirmRequest(BaseModel):
     """HITL 人工确认请求：用户确认后直接执行危险操作，不经过大模型"""
     action: str = Field(..., description="操作类型：delete 或 refund")
     order_id: str = Field(..., min_length=1, max_length=50)
+    session_id: str = Field(..., min_length=1, max_length=100, description="会话ID，用于验证操作来源")
 
     @field_validator("action")
     @classmethod
@@ -325,18 +326,49 @@ async def feedback_stats():
 
 
 @app.post("/api/hitl/confirm")
-async def hitl_confirm(request: HitlConfirmRequest):
+@limiter.limit("10/minute")
+async def hitl_confirm(request: Request, hitl_request: HitlConfirmRequest):
     """
     HITL 人工确认接口：用户确认后直接执行危险操作。
-    不经过大模型，代码强制执行，防止模型绕过确认直接调用。
+    安全机制：
+    1. 限流：每 IP 每分钟 10 次
+    2. 会话验证：必须从对应会话的对话历史中能找到该订单的 HITL 确认请求
+    3. 不经过大模型，代码强制执行，防止模型绕过确认直接调用
     """
     rid = new_request_id()
-    logger.info(f"HITL确认 | action={request.action} | order={request.order_id}")
+    logger.info(f"HITL确认 | action={hitl_request.action} | order={hitl_request.order_id} | session={hitl_request.session_id}")
 
-    if request.action == "delete":
-        result = execute_delete_order.invoke({"order_id": request.order_id})
+    # 会话验证：检查该会话是否真的发起过此订单的 HITL 请求
+    try:
+        config = {"configurable": {"thread_id": hitl_request.session_id}}
+        state = await app.state.agent.aget_state(config)
+        messages = state.values.get("messages", [])
+        # 检查最近 10 条消息中是否有该订单的 HITL_CONFIRM
+        pending = False
+        for msg in messages[-10:]:
+            content = msg.content if isinstance(msg.content, str) else str(msg.content)
+            if "[HITL_CONFIRM]" in content and hitl_request.order_id in content:
+                pending = True
+                break
+        if not pending:
+            logger.warning(f"HITL验证失败 | 会话{hitl_request.session_id}中未找到订单{hitl_request.order_id}的确认请求")
+            metrics.record_security_block()
+            return JSONResponse(
+                status_code=403,
+                content={"error": "未找到对应的操作请求，请先在对话中发起删除/退款申请"},
+            )
+    except Exception as e:
+        logger.error(f"HITL会话验证异常: {e}")
+        return JSONResponse(
+            status_code=500,
+            content={"error": "会话验证失败，请稍后重试"},
+        )
+
+    # 验证通过，执行操作
+    if hitl_request.action == "delete":
+        result = execute_delete_order.invoke({"order_id": hitl_request.order_id})
     else:  # refund
-        result = execute_refund_order.invoke({"order_id": request.order_id})
+        result = execute_refund_order.invoke({"order_id": hitl_request.order_id})
 
     logger.info(f"HITL执行结果 | {result[:80]}")
     return {"result": result}

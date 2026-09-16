@@ -1,6 +1,5 @@
 """Agent 层：工具定义"""
 from langchain_core.tools import tool
-from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 import httpx
 
 from rag.retriever import format_docs, search_knowledge
@@ -9,7 +8,7 @@ from common.logger import get_logger
 
 logger = get_logger("agent.tools")
 
-# 可重试的瞬时错误类型（超时、网络连接、5xx）
+# 可重试的瞬时错误类型（工具内部 try/except 手动处理，不使用装饰器）
 RETRYABLE_EXCEPTIONS = (
     TimeoutError,
     ConnectionError,
@@ -18,14 +17,6 @@ RETRYABLE_EXCEPTIONS = (
     httpx.WriteTimeout,
     httpx.PoolTimeout,
     httpx.RemoteProtocolError,
-)
-
-# 重试装饰器：最多 3 次，指数退避（1s → 2s → 4s），只重试瞬时错误
-retry_on_transient = retry(
-    stop=stop_after_attempt(3),
-    wait=wait_exponential(multiplier=1, min=1, max=5),
-    retry=retry_if_exception_type(RETRYABLE_EXCEPTIONS),
-    reraise=True,
 )
 
 

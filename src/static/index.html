@@ -547,12 +547,16 @@
                     const resp = await fetch('/api/hitl/confirm', {
                         method: 'POST',
                         headers: {'Content-Type': 'application/json'},
-                        body: JSON.stringify({action: actionType, order_id: orderId}),
+                        body: JSON.stringify({action: actionType, order_id: orderId, session_id: sessionId}),
                     });
                     const data = await resp.json();
-                    // 执行结果直接作为 AI 消息显示
-                    addPlainAIMessage(data.result);
-                    saveMessage('assistant', data.result);
+                    if (!resp.ok) {
+                        addPlainAIMessage(data.error || '执行失败，请稍后重试或联系人工客服。');
+                    } else {
+                        // 执行结果直接作为 AI 消息显示
+                        addPlainAIMessage(data.result);
+                        saveMessage('assistant', data.result);
+                    }
                 } catch (e) {
                     addPlainAIMessage('执行失败，请稍后重试或联系人工客服。');
                 }

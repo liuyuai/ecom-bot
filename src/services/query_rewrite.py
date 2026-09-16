@@ -36,7 +36,7 @@ async def rewrite_query(question: str, history: list) -> str:
     if not history:
         return question
 
-    # 只取最近 5 轮，避免上下文过长
+    # 只取最近 5 轮（10条消息），避免上下文过长
     recent_history = history[-10:]
     history_text = "\n".join(
         f"{'用户' if m['type'] == 'human' else '客服'}: {m['content']}"

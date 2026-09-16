@@ -62,6 +62,7 @@ def save_good_feedback(question: str, answer: str):
 
     # 2. 增量写入 Chroma（即时生效，不用重建整个库）
     try:
+        from langchain_text_splitters import RecursiveCharacterTextSplitter
         embeddings = SiliconFlowEmbeddings()
         vs = Chroma(
             persist_directory=CHROMA_PATH,
@@ -72,10 +73,13 @@ def save_good_feedback(question: str, answer: str):
         content = f"用户好评问答 > Q: {question}\n### Q: {question}\n\n{answer}"
         doc = Document(
             page_content=content,
-            metadata={"source": GOOD_QA_FILE},
+            metadata={"source": GOOD_QA_FILE, "file_type": "markdown"},
         )
-        vs.add_documents([doc])
-        logger.info(f"好评已写入 Chroma | Q={question[:30]}")
+        # 分块（和 ingest.py 保持一致：chunk_size=400, overlap=40）
+        splitter = RecursiveCharacterTextSplitter(chunk_size=400, chunk_overlap=40)
+        chunks = splitter.split_documents([doc])
+        vs.add_documents(chunks)
+        logger.info(f"好评已写入 Chroma | Q={question[:30]} | 分块={len(chunks)}")
     except Exception as e:
         logger.error(f"写入 Chroma 失败: {e}")
 
