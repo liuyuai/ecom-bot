@@ -41,6 +41,19 @@ logger = get_logger("api")
 # 限流器：按 IP 限制
 limiter = Limiter(key_func=get_remote_address)
 
+# 每会话异步锁：同一个 session_id 的请求串行执行，防止并发写 checkpointer 导致状态覆盖
+import asyncio
+_session_locks: dict[str, asyncio.Lock] = {}
+_session_locks_guard = asyncio.Lock()
+
+
+async def get_session_lock(session_id: str) -> asyncio.Lock:
+    """获取指定会话的锁（不存在则创建）"""
+    async with _session_locks_guard:
+        if session_id not in _session_locks:
+            _session_locks[session_id] = asyncio.Lock()
+        return _session_locks[session_id]
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -327,8 +340,17 @@ async def chat(request: Request, chat_request: ChatRequest):
                            latency_ms=elapsed * 1000, status=status,
                            intent=intent_result.intent.value)
 
+    async def locked_generator():
+        """带会话锁的生成器：同一 session 的请求排队执行，防止并发写状态覆盖"""
+        lock = await get_session_lock(chat_request.session_id)
+        async with lock:
+            logger.debug(f"获取会话锁 | session={chat_request.session_id}")
+            async for event in event_generator():
+                yield event
+            logger.debug(f"释放会话锁 | session={chat_request.session_id}")
+
     return StreamingResponse(
-        event_generator(),
+        locked_generator(),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
