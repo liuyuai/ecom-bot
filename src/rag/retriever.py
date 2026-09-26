@@ -1,9 +1,9 @@
 """检索模块 - 混合检索（向量+BM25）+ 重排序（Reranker）"""
 import sys
 import os
+import json
 sys.path.insert(0, os.path.dirname(__file__))
 
-import hashlib
 import httpx
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 from langchain_community.vectorstores import Chroma
@@ -22,7 +22,11 @@ logger = get_logger("retriever")
 # 全局缓存：BM25 索引和文档列表，避免每次检索都重建
 _bm25 = None
 _all_docs = None
-_bm25_fingerprint = None  # 构建 BM25 时的内容指纹（全部文档文本 md5），用于检测知识库变化
+_bm25_version = None   # 构建 BM25 时的知识库版本号（来自 manifest.json）
+_bm25_dirty = False    # 进程内失效标记：同进程写入（好评入库）时置位，检索零额外开销感知
+
+# 知识库 manifest：ingest.py 建库时维护，记录已处理文件哈希；这里复用其 version 字段做跨进程变更感知
+MANIFEST_PATH = os.path.join(CHROMA_PATH, "manifest.json")
 
 
 def _tokenize(text: str) -> list:
@@ -30,38 +34,69 @@ def _tokenize(text: str) -> list:
     return list(jieba.cut(text))
 
 
-def _content_fingerprint(vs) -> str:
-    """计算 Chroma 全部文档的内容指纹：md5(排序拼接全部文本)。
+def mark_kb_changed():
+    """知识库内容变化时调用（ingest 建库后 / 好评入库后）。
 
-    用内容哈希而非文档计数判断 BM25 缓存失效：
-    - 计数方案漏洞：知识库"改一删一、总数不变"时不触发重建，检索仍用旧 BM25 索引
-    - 内容哈希：任何文本变化（新增/删除/修改，含同数量变更）都会改变指纹，必然触发重建
-    - 先排序再拼接：防止 Chroma 内部返回顺序变化导致误判重建
+    两层失效机制：
+    1. 置位进程内 dirty 标记 → 同进程写入（feedback 好评）立刻感知，检索零额外开销
+    2. bump manifest.json 的 version → 跨进程写入（独立 ingest 脚本）也能感知
     """
-    docs = (vs.get(include=["documents"]) or {}).get("documents") or []
-    texts = sorted((d or "") for d in docs)
-    return hashlib.md5("\x1f".join(texts).encode("utf-8")).hexdigest()
+    global _bm25_dirty
+    _bm25_dirty = True
+    try:
+        manifest = {}
+        if os.path.exists(MANIFEST_PATH):
+            with open(MANIFEST_PATH, "r", encoding="utf-8") as f:
+                manifest = json.load(f)
+        manifest["version"] = int(manifest.get("version", 0)) + 1
+        os.makedirs(os.path.dirname(MANIFEST_PATH), exist_ok=True)
+        with open(MANIFEST_PATH, "w", encoding="utf-8") as f:
+            json.dump(manifest, f, ensure_ascii=False, indent=2)
+        logger.info(f"知识库版本号已更新 → v{manifest['version']}")
+    except Exception as e:
+        logger.warning(f"更新知识库版本号失败（dirty 标记仍生效）: {e}")
+
+
+def _get_kb_version() -> str:
+    """读取知识库版本号（轻量：读一个小 JSON，非全量拉文档）。
+
+    manifest.json 的 version 字段优先；读不到时 fallback 文档计数。
+    """
+    try:
+        if os.path.exists(MANIFEST_PATH):
+            with open(MANIFEST_PATH, "r", encoding="utf-8") as f:
+                manifest = json.load(f)
+            return f"manifest:{manifest.get('version', 0)}"
+    except Exception:
+        pass
+    try:
+        vs = get_vectorstore()
+        count = vs._collection.count() if hasattr(vs, "_collection") else 0
+        return f"count:{count}"
+    except Exception:
+        return "unknown"
 
 
 def _get_bm25_index():
-    """懒加载 BM25 索引（从 Chroma 取所有文档构建）
+    """懒加载 BM25 索引（从 Chroma 取所有文档构建）。
 
-    缓存失效机制：记录构建时的内容指纹，
-    检索前比对当前指纹，任何内容变化（增/删/改，含同数量变更）自动重建
-    （好评入库/增量更新后自动生效）。
+    缓存失效机制（替代早期"文档计数比对"——改一删一总数不变会漏判）：
+    - dirty 标记：同进程写入（好评入库）置位，检索立即感知
+    - manifest 版本号：跨进程写入（独立 ingest 脚本）也能感知
+    两者都变化才重建；重建时只拉一次 vs.get()（文档+元数据，无重复拉取）。
     """
-    global _bm25, _all_docs, _bm25_fingerprint
+    global _bm25, _all_docs, _bm25_version, _bm25_dirty
 
     vs = get_vectorstore()
-    current_fp = _content_fingerprint(vs)
+    current_version = _get_kb_version()
 
-    # 缓存有效：BM25 已构建 且 内容指纹未变化
-    if _bm25 is not None and current_fp == _bm25_fingerprint:
+    # 缓存有效：已构建 且 无失效标记 且 版本号未变化
+    if _bm25 is not None and not _bm25_dirty and current_version == _bm25_version:
         return _bm25, _all_docs
 
-    # 缓存失效：重建 BM25 索引
+    # 缓存失效：重建 BM25 索引（vs.get() 只调这一次）
     if _bm25 is not None:
-        logger.info("BM25 缓存失效 | 内容指纹变化（增/删/改），重建索引")
+        logger.info("BM25 缓存失效 | 知识库内容已变化（dirty 标记或版本号），重建索引")
 
     result = vs.get()
     _all_docs = []
@@ -72,7 +107,8 @@ def _get_bm25_index():
 
     tokenized_corpus = [_tokenize(doc.page_content) for doc in _all_docs]
     _bm25 = BM25Okapi(tokenized_corpus)
-    _bm25_fingerprint = current_fp
+    _bm25_version = current_version
+    _bm25_dirty = False
     logger.info(f"BM25 索引已构建 | 文档数={len(_all_docs)}")
     return _bm25, _all_docs
 

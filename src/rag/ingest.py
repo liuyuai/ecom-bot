@@ -20,6 +20,7 @@ from config import (
     CHROMA_PATH, COLLECTION_NAME, DOCS_DIR,
 )
 from rag.embeddings import SiliconFlowEmbeddings
+from rag.retriever import mark_kb_changed
 
 # manifest 文件：记录每个已处理文件的哈希，存在向量库目录下
 MANIFEST_PATH = os.path.join(CHROMA_PATH, "manifest.json")
@@ -319,6 +320,9 @@ def main(force=False):
 
     # 7. 保存 manifest
     save_manifest(manifest)
+
+    # 7.5 知识库内容已变化：打版本号/失效标记，让运行中的服务重建 BM25 缓存（跨进程感知）
+    mark_kb_changed()
 
     # 8. 统计
     all_docs = vectorstore.get()

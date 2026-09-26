@@ -81,6 +81,9 @@ def save_good_feedback(question: str, answer: str):
         splitter = RecursiveCharacterTextSplitter(chunk_size=400, chunk_overlap=40)
         chunks = splitter.split_documents([doc])
         vs.add_documents(chunks)
+        # 知识库内容已变化：打版本号/失效标记，让 BM25 缓存下次检索自动重建
+        from rag.retriever import mark_kb_changed
+        mark_kb_changed()
         logger.info(f"好评已写入 Chroma | Q={question[:30]} | 分块={len(chunks)}")
     except Exception as e:
         logger.error(f"写入 Chroma 失败: {e}")
