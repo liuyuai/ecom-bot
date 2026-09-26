@@ -9,6 +9,7 @@
 import time
 import asyncio
 from common.logger import get_logger
+from config import HEALTH_EXTERNAL_CHECKS
 
 logger = get_logger("health")
 
@@ -109,18 +110,36 @@ async def check_checkpointer(checkpointer) -> dict:
 
 
 async def run_health_checks(checkpointer=None) -> dict:
-    """运行所有健康检查，返回汇总结果"""
+    """运行所有健康检查，返回汇总结果。
+
+    外部 API 检查（LLM/Embedding）受 HEALTH_EXTERNAL_CHECKS 控制：
+    - dev/test 环境默认关闭 → 标注 skipped，不真实调用 API（省 token）
+    - prod 环境默认开启 → 全量检查
+    本地检查（vectorstore / checkpointer）始终执行。
+    """
     start = time.time()
 
-    checks = await asyncio.gather(
-        check_llm(),
-        check_embedding(),
-        check_vectorstore(),
-        check_checkpointer(checkpointer),
-    )
+    if HEALTH_EXTERNAL_CHECKS:
+        checks = await asyncio.gather(
+            check_llm(),
+            check_embedding(),
+            check_vectorstore(),
+            check_checkpointer(checkpointer),
+        )
+    else:
+        logger.info("健康检查：非 prod 环境跳过 LLM/Embedding 外部 API 检查")
+        local_checks = await asyncio.gather(
+            check_vectorstore(),
+            check_checkpointer(checkpointer),
+        )
+        checks = [
+            {"name": "llm", "status": "skipped", "reason": "非 prod 环境不调外部 API"},
+            {"name": "embedding", "status": "skipped", "reason": "非 prod 环境不调外部 API"},
+        ] + list(local_checks)
 
     total_ms = round((time.time() - start) * 1000)
-    all_ok = all(c["status"] == "ok" for c in checks)
+    ok_statuses = {"ok", "skipped"}
+    all_ok = all(c["status"] in ok_statuses for c in checks)
     degraded = any(c["status"] == "timeout" for c in checks)
 
     return {

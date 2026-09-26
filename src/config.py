@@ -114,6 +114,11 @@ RERANK_TIMEOUT = float(_get("RERANK_TIMEOUT", "10"))
 # ===== 限流 =====
 RATE_LIMIT_PER_MINUTE = int(_get("RATE_LIMIT_PER_MINUTE", "30"))
 
+# ===== 健康检查 =====
+# 是否执行外部 API 检查（LLM/Embedding 会真实调用 API 烧 token）。
+# dev/test 默认关闭（本地开发省 token），prod 默认开启；可用 HEALTH_EXTERNAL_CHECKS 覆盖。
+HEALTH_EXTERNAL_CHECKS = _get("HEALTH_EXTERNAL_CHECKS", "1" if APP_ENV == "prod" else "0") == "1"
+
 # ===== CORS 跨域 =====
 # "*" = 允许所有域名（开发用）；生产环境配置具体域名，多个用逗号分隔
 # 示例：CORS_ORIGINS=https://shop.example.com,https://admin.example.com

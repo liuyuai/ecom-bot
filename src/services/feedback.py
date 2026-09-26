@@ -48,7 +48,8 @@ def save_good_feedback(question: str, answer: str):
     1. 追加到 docs/用户好评问答.md（持久化）
     2. 增量写入 Chroma（即时生效）
     """
-    # 1. 追加到文件
+    # 1. 追加到文件（持久化，重启重建索引也包含好评）
+    # 文件写入失败必须抛错，不能只 log——否则用户侧显示"已收录"但重启后好评丢失（静默不一致）
     qa_text = _format_good_qa(question, answer)
     try:
         with open(GOOD_QA_FILE, "a", encoding="utf-8") as f:
@@ -59,6 +60,7 @@ def save_good_feedback(question: str, answer: str):
         logger.info(f"好评已写入文件 | Q={question[:30]}")
     except Exception as e:
         logger.error(f"写入好评文件失败: {e}")
+        raise RuntimeError(f"好评文件写入失败：{e}") from e
 
     # 2. 增量写入 Chroma（即时生效，不用重建整个库）
     try:

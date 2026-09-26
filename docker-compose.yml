@@ -50,12 +50,17 @@ services:
       - ./logs:/app/logs
       - ./embed_cache.json:/app/embed_cache.json
       # 知识库文档（可热更新，更新后重启容器重建索引）
-      - ./docs:/app/docs:ro
+      # 注意：必须可写（rw）——好评反馈要追加写 docs/用户好评问答.md，
+      # 只读挂载(:ro)会导致写入失败而用户侧仍显示"已收录"（静默不一致）
+      - ./docs:/app/docs
     depends_on:
       redis:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      # 用 /health/live（纯存活检查，不调外部 API）。
+      # 不要用 /health 或 /health/ready：它们会真实调用 DeepSeek/Embedding API，
+      # 每 15 秒一次持续烧钱，且 API 抖动就会误判容器不健康导致重启。
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health/live')"]
       interval: 15s
       timeout: 5s
       retries: 3

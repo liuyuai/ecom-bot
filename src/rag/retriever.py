@@ -3,6 +3,7 @@ import sys
 import os
 sys.path.insert(0, os.path.dirname(__file__))
 
+import hashlib
 import httpx
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 from langchain_community.vectorstores import Chroma
@@ -21,7 +22,7 @@ logger = get_logger("retriever")
 # 全局缓存：BM25 索引和文档列表，避免每次检索都重建
 _bm25 = None
 _all_docs = None
-_bm25_doc_count = 0  # 构建 BM25 时 Chroma 的文档数，用于检测知识库变化
+_bm25_fingerprint = None  # 构建 BM25 时的内容指纹（全部文档文本 md5），用于检测知识库变化
 
 
 def _tokenize(text: str) -> list:
@@ -29,24 +30,38 @@ def _tokenize(text: str) -> list:
     return list(jieba.cut(text))
 
 
+def _content_fingerprint(vs) -> str:
+    """计算 Chroma 全部文档的内容指纹：md5(排序拼接全部文本)。
+
+    用内容哈希而非文档计数判断 BM25 缓存失效：
+    - 计数方案漏洞：知识库"改一删一、总数不变"时不触发重建，检索仍用旧 BM25 索引
+    - 内容哈希：任何文本变化（新增/删除/修改，含同数量变更）都会改变指纹，必然触发重建
+    - 先排序再拼接：防止 Chroma 内部返回顺序变化导致误判重建
+    """
+    docs = (vs.get(include=["documents"]) or {}).get("documents") or []
+    texts = sorted((d or "") for d in docs)
+    return hashlib.md5("\x1f".join(texts).encode("utf-8")).hexdigest()
+
+
 def _get_bm25_index():
     """懒加载 BM25 索引（从 Chroma 取所有文档构建）
 
-    缓存失效机制：记录构建时的 Chroma 文档计数，
-    检索前比对当前计数，变化则自动重建（好评入库/增量更新后自动生效）。
+    缓存失效机制：记录构建时的内容指纹，
+    检索前比对当前指纹，任何内容变化（增/删/改，含同数量变更）自动重建
+    （好评入库/增量更新后自动生效）。
     """
-    global _bm25, _all_docs, _bm25_doc_count
+    global _bm25, _all_docs, _bm25_fingerprint
 
     vs = get_vectorstore()
-    current_count = vs._collection.count() if hasattr(vs, "_collection") else len(vs.get()["documents"])
+    current_fp = _content_fingerprint(vs)
 
-    # 缓存有效：BM25 已构建 且 文档计数未变化
-    if _bm25 is not None and current_count == _bm25_doc_count:
+    # 缓存有效：BM25 已构建 且 内容指纹未变化
+    if _bm25 is not None and current_fp == _bm25_fingerprint:
         return _bm25, _all_docs
 
     # 缓存失效：重建 BM25 索引
     if _bm25 is not None:
-        logger.info(f"BM25 缓存失效 | 旧计数={_bm25_doc_count} → 新计数={current_count}，重建索引")
+        logger.info("BM25 缓存失效 | 内容指纹变化（增/删/改），重建索引")
 
     result = vs.get()
     _all_docs = []
@@ -57,8 +72,8 @@ def _get_bm25_index():
 
     tokenized_corpus = [_tokenize(doc.page_content) for doc in _all_docs]
     _bm25 = BM25Okapi(tokenized_corpus)
-    _bm25_doc_count = current_count
-    logger.info(f"BM25 索引已构建 | 文档数={current_count}")
+    _bm25_fingerprint = current_fp
+    logger.info(f"BM25 索引已构建 | 文档数={len(_all_docs)}")
     return _bm25, _all_docs
 
 

@@ -368,7 +368,12 @@ async def feedback(request: Request, fb_request: FeedbackRequest):
     logger.info(f"收到反馈 | rating={fb_request.rating} | Q={fb_request.question[:40]}")
 
     if fb_request.rating == "up":
-        save_good_feedback(fb_request.question, fb_request.answer)
+        try:
+            save_good_feedback(fb_request.question, fb_request.answer)
+        except RuntimeError as e:
+            # 文件写入失败：明确告诉用户收录失败，不能静默显示"已收录"
+            logger.error(f"好评收录失败 | {e}")
+            raise HTTPException(status_code=500, detail=f"好评收录失败：{e}")
         return {"status": "ok", "message": "已收录到知识库", "good_count": get_good_feedback_count()}
     else:
         save_bad_feedback(fb_request.question, fb_request.answer)
